@@ -45,7 +45,7 @@ require (
 	github.com/shurcooL/vfsgen v0.0.0-20181202132449-6a9ea43bcacd
 	github.com/stretchr/testify v1.4.0
 	github.com/tonistiigi/fifo v0.0.0-20190226154929-a9fb20d87448
-	github.com/ugorji/go v1.1.7 // indirect
+	github.com/ugorji/go/codec v1.1.7 // indirect
 	github.com/weaveworks/common v0.0.0-20190822150010-afb9996716e4
 	go.etcd.io/etcd v0.0.0-20190815204525-8f85f0dc2607 // indirect
 	go.opencensus.io v0.22.1 // indirect
@@ -74,5 +74,6 @@ replace k8s.io/client-go => k8s.io/client-go v0.0.0-20190620085101-78d2af792bab
 // Override reference causing proxy error.  Otherwise it attempts to download https://proxy.golang.org/golang.org/x/net/@v/v0.0.0-20190813000000-74dc4d7220e7.info
 replace golang.org/x/net => golang.org/x/net v0.0.0-20190923162816-aa69164e4478
 
-// Use custom version of Cortex
-replace github.com/cortexproject/cortex => github.com/pstibrany/cortex v0.2.1-0.20191004074055-dc9ebd874076
+replace github.com/cortexproject/cortex => github.com/pstibrany/cortex v0.2.1-0.20191004134343-cbdeeb827d6e
+
+// replace github.com/cortexproject/cortex => /Users/peter/Grafana/cortex
