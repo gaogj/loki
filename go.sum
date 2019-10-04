@@ -515,6 +515,8 @@ github.com/prometheus/prometheus v0.0.0-20190818123050-43acd0e2e93f h1:7C9G4yUog
 github.com/prometheus/prometheus v0.0.0-20190818123050-43acd0e2e93f/go.mod h1:rMTlmxGCvukf2KMu3fClMDKLLoJ5hl61MhcJ7xKakf0=
 github.com/prometheus/prometheus v1.8.2-0.20190918104050-8744afdd1ea0 h1:W4dTblzSVIBNfDimJhh70OpZQQMwLVpwK50scXdH94w=
 github.com/prometheus/prometheus v1.8.2-0.20190918104050-8744afdd1ea0/go.mod h1:elNqjVbwD3sCZJqKzyN7uEuwGcCpeJvv67D6BrHsDbw=
+github.com/pstibrany/cortex v0.2.1-0.20191004074055-dc9ebd874076 h1:H1Aiuwf2TDwXdEnXhG7l57NpB+oKl1+9iwezTE2JDsw=
+github.com/pstibrany/cortex v0.2.1-0.20191004074055-dc9ebd874076/go.mod h1:NpGPTrDZhxX5OPcFiBLXoIiiadxKeHmqdUaZspAsZjk=
 github.com/rafaeljusto/redigomock v0.0.0-20190202135759-257e089e14a1 h1:+kGqA4dNN5hn7WwvKdzHl0rdN5AEkbNZd0VjRltAiZg=
 github.com/rafaeljusto/redigomock v0.0.0-20190202135759-257e089e14a1/go.mod h1:JaY6n2sDr+z2WTsXkOmNRUfDy6FN0L6Nk7x06ndm4tY=
 github.com/rogpeppe/fastuuid v0.0.0-20150106093220-6724a57986af/go.mod h1:XWv6SoW27p1b0cqNHllgS5HIMJraePCO15w5zCzIWYg=
