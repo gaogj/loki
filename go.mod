@@ -74,6 +74,6 @@ replace k8s.io/client-go => k8s.io/client-go v0.0.0-20190620085101-78d2af792bab
 // Override reference causing proxy error.  Otherwise it attempts to download https://proxy.golang.org/golang.org/x/net/@v/v0.0.0-20190813000000-74dc4d7220e7.info
 replace golang.org/x/net => golang.org/x/net v0.0.0-20190923162816-aa69164e4478
 
-replace github.com/cortexproject/cortex => github.com/pstibrany/cortex v0.2.1-0.20191009144446-c46fe8758d5c
+replace github.com/cortexproject/cortex => github.com/pstibrany/cortex v0.2.1-0.20191010082900-df41ffad32e1
 
 // replace github.com/cortexproject/cortex => /Users/peter/Grafana/cortex
