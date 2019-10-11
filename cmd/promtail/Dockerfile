@@ -1,7 +1,7 @@
 FROM golang:1.13 as build
+RUN apt-get update && apt-get install -qy libsystemd-dev
 COPY . /src/loki
 WORKDIR /src/loki
-RUN apt-get update && apt-get install -qy libsystemd-dev
 RUN make clean && make BUILD_IN_CONTAINER=false promtail
 
 # Promtail requires debian as the base image to support systemd journal reading
