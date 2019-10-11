@@ -1,0 +1,10 @@
+cmd/promtail/promtail
+cmd/loki/loki
+cmd/loki-canary/loki-canary
+cmd/logcli/logcli
+.cache
+cmd/docker-driver/rootfs
+dist/
+cmd/fluent-bit/out_loki.h
+cmd/fluent-bit/out_loki.so
+
