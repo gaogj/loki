@@ -77,7 +77,7 @@ func (r *Ring) forget(ctx context.Context, id string) error {
 		}
 
 		ringDesc := in.(*Desc)
-		ringDesc.RemoveIngester(id)
+		ringDesc.Leave(id, time.Now())
 		return ringDesc, true, nil
 	}
 	return r.KVClient.CAS(ctx, ConsulKey, unregister)

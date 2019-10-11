@@ -46,6 +46,7 @@ type LifecyclerConfig struct {
 	ListenPort       *int
 	NumTokens        int           `yaml:"num_tokens,omitempty"`
 	HeartbeatPeriod  time.Duration `yaml:"heartbeat_period,omitempty"`
+	ObservePeriod    time.Duration `yaml:"observe_period,omitempty"`
 	JoinAfter        time.Duration `yaml:"join_after,omitempty"`
 	MinReadyDuration time.Duration `yaml:"min_ready_duration,omitempty"`
 	UnusedFlag       bool          `yaml:"claim_on_rollout,omitempty"` // DEPRECATED - left for backwards-compatibility
@@ -78,6 +79,7 @@ func (cfg *LifecyclerConfig) RegisterFlagsWithPrefix(prefix string, f *flag.Flag
 	f.IntVar(&cfg.NumTokens, prefix+"num-tokens", 128, "Number of tokens for each ingester.")
 	f.DurationVar(&cfg.HeartbeatPeriod, prefix+"heartbeat-period", 5*time.Second, "Period at which to heartbeat to consul.")
 	f.DurationVar(&cfg.JoinAfter, prefix+"join-after", 0*time.Second, "Period to wait for a claim from another member; will join automatically after this.")
+	f.DurationVar(&cfg.ObservePeriod, prefix+"observe-period", 0*time.Second, "Observe tokens after generating to resolve collisions.")
 	f.DurationVar(&cfg.MinReadyDuration, prefix+"min-ready-duration", 1*time.Minute, "Minimum duration to wait before becoming ready. This is to work around race conditions with ingesters exiting and updating the ring.")
 	flagext.DeprecatedFlag(f, prefix+"claim-on-rollout", "DEPRECATED. This feature is no longer optional.")
 	f.BoolVar(&cfg.NormaliseTokens, prefix+"normalise-tokens", false, "Store tokens in a normalised fashion to reduce allocations.")
@@ -264,6 +266,10 @@ func (i *Lifecycler) ClaimTokensFor(ctx context.Context, ingesterID string) erro
 			}
 
 			tokens = ringDesc.ClaimTokens(ingesterID, i.ID, i.cfg.NormaliseTokens)
+			// update timestamp to register ring change.
+			ing := ringDesc.Ingesters[i.ID]
+			ing.Timestamp = time.Now().Unix()
+			ringDesc.Ingesters[i.ID] = ing
 			return ringDesc, true, nil
 		}
 
@@ -308,6 +314,7 @@ func (i *Lifecycler) loop() {
 
 	// We do various period tasks
 	autoJoinAfter := time.After(i.cfg.JoinAfter)
+	var observeChan <-chan time.Time = nil
 
 	heartbeatTicker := time.NewTicker(i.cfg.HeartbeatPeriod)
 	defer heartbeatTicker.Stop()
@@ -321,10 +328,39 @@ loop:
 			// then pick some tokens and enter ACTIVE state.
 			if i.GetState() == PENDING {
 				level.Info(util.Logger).Log("msg", "auto-joining cluster after timeout")
-				if err := i.autoJoin(context.Background()); err != nil {
+				targetState := ACTIVE
+				if i.cfg.ObservePeriod > 0 {
+					targetState = JOINING
+				}
+
+				if err := i.autoJoin(context.Background(), targetState); err != nil {
 					level.Error(util.Logger).Log("msg", "failed to pick tokens in consul", "err", err)
 					os.Exit(1)
 				}
+
+				if targetState == JOINING {
+					level.Info(util.Logger).Log("msg", "observing tokens before going ACTIVE")
+					observeChan = time.After(i.cfg.ObservePeriod)
+				}
+			}
+
+		case <-observeChan:
+			observeChan = nil
+			if i.GetState() != JOINING {
+				level.Error(util.Logger).Log("msg", "unexpected state while observing tokens", "state", i.GetState())
+			}
+
+			if i.verifyTokens(context.Background()) {
+				level.Info(util.Logger).Log("msg", "token verification successful")
+
+				err := i.changeState(context.Background(), ACTIVE)
+				if err != nil {
+					level.Error(util.Logger).Log("msg", "failed to set state to ACTIVE", "err", err)
+				}
+			} else {
+				level.Info(util.Logger).Log("msg", "token verification failed, observing")
+				// keep observing
+				observeChan = time.After(i.cfg.ObservePeriod)
 			}
 
 		case <-heartbeatTicker.C:
@@ -373,6 +409,8 @@ heartbeatLoop:
 		}
 		level.Info(util.Logger).Log("msg", "ingester removed from consul")
 	}
+
+	i.KVStore.Stop()
 }
 
 // initRing is the first thing we do when we start. It:
@@ -388,7 +426,7 @@ func (i *Lifecycler) initRing(ctx context.Context) error {
 		}
 
 		ingesterDesc, ok := ringDesc.Ingesters[i.ID]
-		if !ok {
+		if !ok || ingesterDesc.State == LEFT {
 			// Either we are a new ingester, or consul must have restarted
 			level.Info(util.Logger).Log("msg", "entry not found in ring, adding with no tokens")
 			ringDesc.AddIngester(i.ID, i.Addr, []uint32{}, i.GetState(), i.cfg.NormaliseTokens)
@@ -401,12 +439,78 @@ func (i *Lifecycler) initRing(ctx context.Context) error {
 		i.setTokens(tokens)
 
 		level.Info(util.Logger).Log("msg", "existing entry found in ring", "state", i.GetState(), "tokens", len(tokens))
-		return ringDesc, true, nil
+		// we haven't modified the ring, don't try to store it.
+		return nil, true, nil
 	})
 }
 
+// Verifies that tokens that this ingester has registered to the ring still belong to it.
+// Gossiping ring may change the ownership of tokens in case of conflicts.
+// If ingester doesn't its tokens anymore, this method generates new ones and puts them to the ring.
+func (i *Lifecycler) verifyTokens(ctx context.Context) bool {
+	result := false
+
+	err := i.KVStore.CAS(ctx, ConsulKey, func(in interface{}) (out interface{}, retry bool, err error) {
+		var ringDesc *Desc
+		if in == nil {
+			ringDesc = NewDesc()
+		} else {
+			ringDesc = in.(*Desc)
+		}
+
+		// At this point, we should have the same tokens as we have registered before
+		ringTokens, takenTokens := ringDesc.TokensFor(i.ID)
+
+		if !i.compareTokens(ringTokens) {
+			// uh, oh... our tokens are not our anymore. Let's try new ones.
+			needTokens := i.cfg.NumTokens - len(ringTokens)
+
+			level.Info(util.Logger).Log("msg", "generating new tokens", "count", needTokens)
+			newTokens := GenerateTokens(needTokens, takenTokens)
+
+			ringTokens = append(ringTokens, newTokens...)
+			sort.Sort(sortableUint32(ringTokens))
+
+			ringDesc.AddIngester(i.ID, i.Addr, ringTokens, i.GetState(), i.cfg.NormaliseTokens)
+
+			i.setTokens(ringTokens)
+
+			return ringDesc, true, nil
+		} else {
+			// all is good, this ingester owns its tokens
+			result = true
+			return nil, true, nil
+		}
+	})
+
+	if err != nil {
+		level.Error(util.Logger).Log("msg", "failed to verify tokens", "err", err)
+		return false
+	}
+
+	return result
+}
+
+func (i *Lifecycler) compareTokens(fromRing []uint32) bool {
+	sort.Sort(sortableUint32(fromRing))
+
+	tokens := i.getTokens()
+	sort.Sort(sortableUint32(tokens))
+
+	if len(tokens) != len(fromRing) {
+		return false
+	}
+
+	for i := 0; i < len(tokens); i++ {
+		if tokens[i] != fromRing[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // autoJoin selects random tokens & moves state to ACTIVE
-func (i *Lifecycler) autoJoin(ctx context.Context) error {
+func (i *Lifecycler) autoJoin(ctx context.Context, targetState IngesterState) error {
 	return i.KVStore.CAS(ctx, ConsulKey, func(in interface{}) (out interface{}, retry bool, err error) {
 		var ringDesc *Desc
 		if in == nil {
@@ -422,7 +526,7 @@ func (i *Lifecycler) autoJoin(ctx context.Context) error {
 		}
 
 		newTokens := GenerateTokens(i.cfg.NumTokens-len(myTokens), takenTokens)
-		i.setState(ACTIVE)
+		i.setState(targetState)
 		ringDesc.AddIngester(i.ID, i.Addr, newTokens, i.GetState(), i.cfg.NormaliseTokens)
 
 		tokens := append(myTokens, newTokens...)
@@ -509,7 +613,7 @@ func (i *Lifecycler) unregister(ctx context.Context) error {
 		}
 
 		ringDesc := in.(*Desc)
-		ringDesc.RemoveIngester(i.ID)
+		ringDesc.Leave(i.ID, time.Now())
 		return ringDesc, true, nil
 	})
 }

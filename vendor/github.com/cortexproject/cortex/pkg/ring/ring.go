@@ -61,9 +61,10 @@ var ErrEmptyRing = errors.New("empty ring")
 
 // Config for a Ring
 type Config struct {
-	KVStore           kv.Config     `yaml:"kvstore,omitempty"`
-	HeartbeatTimeout  time.Duration `yaml:"heartbeat_timeout,omitempty"`
-	ReplicationFactor int           `yaml:"replication_factor,omitempty"`
+	KVStore              kv.Config     `yaml:"kvstore,omitempty"`
+	HeartbeatTimeout     time.Duration `yaml:"heartbeat_timeout,omitempty"`
+	ReplicationFactor    int           `yaml:"replication_factor,omitempty"`
+	LeftIngestersTimeout time.Duration `yaml:"left_ingesters_timeout,omitempty"`
 }
 
 // RegisterFlags adds the flags required to config this to the given FlagSet with a specified prefix
@@ -77,6 +78,7 @@ func (cfg *Config) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
 
 	f.DurationVar(&cfg.HeartbeatTimeout, prefix+"ring.heartbeat-timeout", time.Minute, "The heartbeat timeout after which ingesters are skipped for reads/writes.")
 	f.IntVar(&cfg.ReplicationFactor, prefix+"distributor.replication-factor", 3, "The number of ingesters to write to and read from.")
+	f.DurationVar(&cfg.LeftIngestersTimeout, prefix+"ring.left-ingesters-timeout", 5*time.Minute, "How long to keep LEFT ingesters in the ring")
 }
 
 // Ring holds the information about the members of the consistent hash ring.
@@ -136,6 +138,7 @@ func New(cfg Config, name string) (*Ring, error) {
 	}
 	var ctx context.Context
 	ctx, r.quit = context.WithCancel(context.Background())
+	go r.removeLeftIngesters(ctx)
 	go r.loop(ctx)
 	return r, nil
 }
@@ -161,6 +164,52 @@ func (r *Ring) loop(ctx context.Context) {
 		r.ringDesc = ringDesc
 		return true
 	})
+
+	r.KVClient.Stop()
+}
+
+func (r *Ring) removeLeftIngesters(ctx context.Context) {
+	if r.cfg.LeftIngestersTimeout <= 0 {
+		return
+	}
+
+	for {
+		select {
+		case <-time.After(1 * time.Minute):
+			removed := 0
+			// This will not work with gossiping ring, but such ring should get rid of LEFT ingesters on its own.
+			err := r.KVClient.CAS(ctx, ConsulKey, func(in interface{}) (out interface{}, retry bool, err error) {
+				if in == nil {
+					return nil, false, nil
+				}
+
+				ringDesc, ok := in.(*Desc)
+				if !ok {
+					return nil, false, fmt.Errorf("expected ring, got: %T", in)
+				}
+
+				if ringDesc == nil {
+					return nil, false, nil
+				}
+
+				limit := time.Now().Add(-r.cfg.LeftIngestersTimeout)
+				removed = ringDesc.removeLeftIngesters(limit)
+
+				if removed > 0 {
+					return ringDesc, true, nil
+				}
+				return nil, false, nil
+			})
+
+			if err != nil {
+				level.Debug(util.Logger).Log("msg", "failed to remove LEFT ingesters", "err", err)
+			} else if removed > 0 {
+				level.Info(util.Logger).Log("msg", "removed LEFT ingesters", "count", removed)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // migrateRing will denormalise the ring's tokens if stored in normal form.
@@ -341,6 +390,7 @@ func (r *Ring) Collect(ch chan<- prometheus.Metric) {
 		LEAVING.String(): 0,
 		PENDING.String(): 0,
 		JOINING.String(): 0,
+		LEFT.String():    0,
 	}
 	for _, ingester := range r.ringDesc.Ingesters {
 		if !r.IsHealthy(&ingester, Reporting) {

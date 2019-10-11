@@ -194,3 +194,7 @@ func (c *Client) Get(ctx context.Context, key string) (interface{}, error) {
 	}
 	return c.codec.Decode(resp.Kvs[0].Value)
 }
+
+func (c *Client) Stop() {
+	// nothing to do
+}
