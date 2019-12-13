@@ -607,19 +607,25 @@ func (si *bufferedIterator) Next() bool {
 
 // moveNext moves the buffer to the next entry
 func (si *bufferedIterator) moveNext() (int64, []byte, bool) {
-	ts, err := binary.ReadVarint(si.bufReader)
-	if err != nil {
-		if err != io.EOF {
-			si.err = err
-		}
-		return 0, nil, false
-	}
+	ts, l, ok := readTimestampAndLengthFromBuffer(si.bufReader)
 
-	l, err := binary.ReadUvarint(si.bufReader)
-	if err != nil {
-		if err != io.EOF {
-			si.err = err
+	// let's read with varint methods using reader. this is less efficient, but always works.
+	if !ok {
+		var err error
+		ts, err = binary.ReadVarint(si.bufReader)
+		if err != nil {
+			if err != io.EOF {
+				si.err = err
+			}
 			return 0, nil, false
+		}
+
+		l, err = binary.ReadUvarint(si.bufReader)
+		if err != nil {
+			if err != io.EOF {
+				si.err = err
+				return 0, nil, false
+			}
 		}
 	}
 	lineSize := int(l)
@@ -651,6 +657,41 @@ func (si *bufferedIterator) moveNext() (int64, []byte, bool) {
 		n += r
 	}
 	return ts, si.buf[:lineSize], true
+}
+
+// This method reads timestamp and line length from buffer.
+// This helps to avoid extra ReadByte calls for every byte.
+// If it succeeds, boolean is true, and buffered reader is advanced after both values.
+// If it fails, reader is not advanced at all.
+func readTimestampAndLengthFromBuffer(bufReader *bufio.Reader) (ts int64, l uint64, ok bool) {
+	// this should cover both timestamp and linelength
+	if bufReader.Buffered() < 16 {
+		return 0, 0, false
+	}
+
+	buf, err := bufReader.Peek(16)
+	if err != nil {
+		return 0, 0, false
+	}
+
+	ts, r1 := binary.Varint(buf)
+	if r1 <= 0 {
+		return 0, 0, false
+	}
+
+	l, r2 := binary.Uvarint(buf[r1:])
+	if r2 <= 0 {
+		return 0, 0, false
+	}
+
+	if _, err := bufReader.Discard(r1 + r2); err != nil {
+		// this should never happen because we have only read buffered bytes
+		// if we are here, something is wrong, and we fail to satisfy the contract of this
+		// method
+		panic(err)
+	}
+
+	return ts, l, true
 }
 
 func (si *bufferedIterator) Entry() logproto.Entry {
