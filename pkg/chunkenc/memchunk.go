@@ -108,15 +108,14 @@ func (hb *headBlock) serialise(pool WriterPool) ([]byte, error) {
 	inBuf := serializeBytesBufferPool.Get().(*bytes.Buffer)
 	outBuf := &bytes.Buffer{}
 
-	encBuf := make([]byte, binary.MaxVarintLen64)
+	encBuf := make([]byte, 12)
+
 	compressedWriter := pool.GetWriter(outBuf)
 	for _, logEntry := range hb.entries {
-		n := binary.PutVarint(encBuf, logEntry.t)
-		inBuf.Write(encBuf[:n])
+		binary.BigEndian.PutUint64(encBuf[0:8], uint64(logEntry.t))
+		binary.BigEndian.PutUint32(encBuf[8:12], uint32(len(logEntry.s)))
 
-		n = binary.PutUvarint(encBuf, uint64(len(logEntry.s)))
-		inBuf.Write(encBuf[:n])
-
+		inBuf.Write(encBuf)
 		inBuf.WriteString(logEntry.s)
 	}
 
@@ -605,7 +604,8 @@ func (si *bufferedIterator) Next() bool {
 
 // moveNext moves the buffer to the next entry
 func (si *bufferedIterator) moveNext() (int64, []byte, bool) {
-	ts, err := binary.ReadVarint(si.bufReader)
+	si.ensureBufferSize(12)
+	_, err := io.ReadFull(si.bufReader, si.buf[0:12])
 	if err != nil {
 		if err != io.EOF {
 			si.err = err
@@ -613,26 +613,10 @@ func (si *bufferedIterator) moveNext() (int64, []byte, bool) {
 		return 0, nil, false
 	}
 
-	l, err := binary.ReadUvarint(si.bufReader)
-	if err != nil {
-		if err != io.EOF {
-			si.err = err
-			return 0, nil, false
-		}
-	}
-	lineSize := int(l)
+	ts := int64(binary.BigEndian.Uint64(si.buf[0:8]))
+	lineSize := int(binary.BigEndian.Uint32(si.buf[8:12]))
 
-	// If the buffer is not yet initialize or too small, we get a new one.
-	if si.buf == nil || lineSize > cap(si.buf) {
-		// in case of a replacement we replace back the buffer in the pool
-		if si.buf != nil {
-			BytesBufferPool.Put(si.buf)
-		}
-		si.buf = BytesBufferPool.Get(lineSize).([]byte)
-		if lineSize > cap(si.buf) {
-			fmt.Println("oups ", lineSize, " ", len(si.buf), " ", cap(si.buf))
-		}
-	}
+	si.ensureBufferSize(lineSize)
 
 	// Then process reading the line.
 	n, err := si.bufReader.Read(si.buf[:lineSize])
@@ -649,6 +633,21 @@ func (si *bufferedIterator) moveNext() (int64, []byte, bool) {
 		n += r
 	}
 	return ts, si.buf[:lineSize], true
+}
+
+// This method makes sure that si.buf has at least given size
+func (si *bufferedIterator) ensureBufferSize(size int) {
+	// If the buffer is not yet initialize or too small, we get a new one.
+	if si.buf == nil || size > cap(si.buf) {
+		// in case of a replacement we replace back the buffer in the pool
+		if si.buf != nil {
+			BytesBufferPool.Put(si.buf)
+		}
+		si.buf = BytesBufferPool.Get(size).([]byte)
+		if size > cap(si.buf) {
+			fmt.Println("oups ", size, " ", len(si.buf), " ", cap(si.buf))
+		}
+	}
 }
 
 func (si *bufferedIterator) Entry() logproto.Entry {
